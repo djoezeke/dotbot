@@ -1,0 +1,502 @@
+#!/bin/bash
+
+## DOTBOT CONSTANTS
+
+VERSION=0.0.1
+VERBOSE="false"
+CURRENT_DIR=$(pwd)
+INTERACTIVE="false"
+LOG_FILE="$HOME/botdot.log"
+DOTBOT_CONFIG="$HOME/botdot.conf"
+LOGGER_FMT=${LOGGER_FMT:="%Y-%m-%d"}
+
+ACTION=$1
+
+bold="\e[1m"
+reset="\e[0m"
+
+red="\e[1;31m"
+blue="\e[1;34m"
+cyan="\e[1;36m"
+black="\e[1;30m"
+white="\e[1;37m"
+green="\e[1;32m"
+orange="\e[1;33m"
+purple="\e[1;35m"
+yellow="\e[1;33m"
+
+##############################################################################################################
+### dotbot meta!
+
+version(){  
+
+    echo "$(basename "$0") version ${VERSION}"
+    echo
+    echo "Dotbot - github.com/djoezeke/dotbot"
+    exit
+}
+
+help(){
+    cat <<EOT
+dotbot - Minimal Bash-based Dotfile Manager
+
+Usage: 
+    $(basename "$0") <command> [<options>] [args] 
+
+Commands:
+    install [profile]         Install dotfile profile from repo.
+    uninstall [profile]       Uninstall dotfile profile.
+    config [key] [value]      Update config file.
+    help [command]            Show help for command or subcommand.
+    update                    Update dotfiles.
+    upgrade                   Update dotbot.
+    profile [show|switch]     Show or switch dotfile profiles.
+    list                      List available profiles.
+    info                      Show current configuration.
+    backup                    Backup current dotfiles.
+    restore                   Restore dotfiles from backup.
+    version                   Show version info.
+
+Options:
+    -h, --help                Print this help text.
+    -v, --version             Print script version.
+    -V, --verbose             Verbose logging.
+    -i, --interactive         Enable interactive setup.
+
+Run '$(basename "$0") help <command>' for details on a specific command.
+Documentation: https://github.com/djoezeke/dotfiles/
+
+EOT
+}
+
+# Command manual help messages
+docs(){
+    local cmd="$1"
+    case "$cmd" in
+        install)
+            cat <<EOF
+${bold}install${reset} - Install dotfile profile from repository
+Usage: botdot install <profile>
+Installs the specified profile from the configured GitHub repository to the installation path.
+EOF
+            ;;
+        uninstall)
+            cat <<EOF
+${bold}uninstall${reset} - Uninstall dotfile profile
+Usage: botdot uninstall <profile>
+Removes the specified profile from the installation path.
+EOF
+            ;;
+        config)
+            cat <<EOF
+${bold}config${reset} - Update configuration file
+Usage: botdot config <key> <value>
+Sets or updates a configuration variable in $CONFIG_FILE.
+EOF
+            ;;
+        update)
+            cat <<EOF
+${bold}update${reset} - Update dotfiles from repository
+Usage: botdot update
+Pulls the latest changes for the current profile from the repository.
+EOF
+            ;;
+        profile)
+            cat <<EOF
+${bold}profile${reset} - Manage dotfile profiles
+Usage: botdot profile show
+       botdot profile switch <profile>
+Shows or switches the current dotfile profile.
+EOF
+            ;;
+        list)
+            cat <<EOF
+${bold}list${reset} - List available profiles
+Usage: botdot list
+Lists all available profiles (branches) in the configured repository.
+EOF
+            ;;
+        info)
+            cat <<EOF
+${bold}info${reset} - Show current configuration
+Usage: botdot info
+Displays the current configuration variables and values.
+EOF
+            ;;
+        init)
+            cat <<EOF
+${bold}init${reset} - Initialize configuration file
+Usage: botdot init
+Interactively creates or updates the configuration file with required variables.
+EOF
+            ;;
+        backup)
+            cat <<EOF
+${bold}backup${reset} - Backup current dotfiles
+Usage: botdot backup
+Creates a backup of the current dotfiles in the installation path.
+EOF
+            ;;
+        restore)
+            cat <<EOF
+${bold}restore${reset} - Restore dotfiles from backup
+Usage: botdot restore
+Restores dotfiles from the backup created by 'botdot backup'.
+EOF
+            ;;
+        upgrade) 
+            cat << EOT
+EOT
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+### meta
+##############################################################################################################
+
+##############################################################################################################
+### dotbot utils!
+
+# Logging
+log() {
+    local type="$1"; shift
+    local msg="$@"
+    local color=""
+    case "$type" in
+        success) color="$green" ;;
+        error) color="$red" ;;
+        info) color="$blue" ;;
+        warn) color="$yellow" ;;
+        debug) color="$cyan" ;;
+        *) color="$white" ;;
+    esac
+    echo -e "${bold}[$(date "+${LOGGER_FMT}")] [$type]${reset} ${color}$msg${reset}" | tee -a "$LOG_FILE"
+}
+
+# Printing
+print() {
+    local type="$1"; shift
+    local msg="$@"
+    local color=""
+    case "$type" in
+        red) color="$red" ;;
+        blue) color="$blue" ;;
+        cyan) color="$cyan" ;;
+        black) color="$black" ;;
+        green) color="$green" ;;
+        orange) color="$orange" ;;
+        purple) color="$purple" ;;
+        yellow) color="$yellow" ;;
+        *) color="$white" ;;
+    esac
+    echo -e "${color}$msg${reset}"
+}
+
+# Read config
+read_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log error "Config file not found: $CONFIG_FILE"
+        return 1
+    fi
+    source "$CONFIG_FILE"
+}
+
+# Update config
+update_config() {
+    local key="$1"
+    local value="$2"
+    if grep -q "^$key=" "$CONFIG_FILE"; then
+        sed -i "s|^$key=.*|$key=$value|" "$CONFIG_FILE"
+    else
+        echo "$key=$value" >> "$CONFIG_FILE"
+    fi
+    log success "Config updated: $key=$value"
+}
+
+
+# List profiles
+list_profiles() {
+    read_config || return 1
+    local repo="$REPO_URL"
+    if [[ -z "$repo" ]]; then
+        log error "REPO_URL not set in config."
+        return 1
+    fi
+    git ls-remote --heads "$repo" | awk '{print $2}' | sed 's|refs/heads/||'
+}
+
+# Install profile
+install_profile() {
+    read_config || return 1
+    local profile="$1"
+    local repo="$REPO_URL"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$repo" || -z "$profile" ]]; then
+        log error "REPO_URL or profile not specified."
+        return 1
+    fi
+    git clone --branch "$profile" "$repo" "$path/$profile" && log success "Profile '$profile' installed to $path/$profile" || log error "Failed to install profile."
+}
+
+# Uninstall profile
+uninstall_profile() {
+    read_config || return 1
+    local profile="$1"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$profile" ]]; then
+        log error "Profile not specified."
+        return 1
+    fi
+    rm -rf "$path/$profile" && log success "Profile '$profile' uninstalled from $path/$profile" || log error "Failed to uninstall profile."
+}
+
+# Update dotfiles
+update_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$profile" ]]; then
+        log error "DEFAULT_PROFILE not set in config."
+        return 1
+    fi
+    cd "$path/$profile" && git pull && log success "Profile '$profile' updated." || log error "Failed to update profile."
+}
+
+# Show current config
+show_info() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log error "Config file not found: $CONFIG_FILE"
+        return 1
+    fi
+    echo -e "${bold}Current botdot configuration:${reset}"
+    cat "$CONFIG_FILE"
+}
+
+# Interactive config initialization
+init_config() {
+    echo -e "${bold}Initializing botdot configuration...${reset}"
+    read -p "GitHub repository URL: " repo
+    read -p "Username/Email: " user
+    read -p "Default profile: " profile
+    read -p "Installation path [default: $HOME]: " path
+    path="${path:-$HOME}"
+    echo "REPO_URL=$repo" > "$CONFIG_FILE"
+    echo "USER=$user" >> "$CONFIG_FILE"
+    echo "DEFAULT_PROFILE=$profile" >> "$CONFIG_FILE"
+    echo "INSTALL_PATH=$path" >> "$CONFIG_FILE"
+    log success "Configuration initialized at $CONFIG_FILE"
+}
+
+# Backup current dotfiles
+backup_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    mkdir -p "$backup_dir"
+    cp -r "$path/$profile" "$backup_dir/" && log success "Backup created at $backup_dir/$profile" || log error "Backup failed."
+}
+
+# Restore dotfiles from backup
+restore_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    if [[ ! -d "$backup_dir/$profile" ]]; then
+        log error "No backup found for profile '$profile'."
+        return 1
+    fi
+    cp -r "$backup_dir/$profile" "$path/" && log success "Profile '$profile' restored from backup." || log error "Restore failed."
+}
+
+# Profile management
+profile_cmd() {
+    local subcmd="$1"
+    case "$subcmd" in
+        show)
+            read_config || return 1
+            echo "Current profile: ${DEFAULT_PROFILE}"
+            ;;
+        switch)
+            local new_profile="$2"
+            update_config DEFAULT_PROFILE "$new_profile"
+            log success "Switched to profile: $new_profile"
+            ;;
+        *)
+            echo "Usage: botdot profile [show|switch <profile>]"
+            ;;
+    esac
+}
+
+print_result() {
+    [ $1 -eq 0 ] \
+        && print_success "$2" \
+        || print_error "$2"
+
+    [ "$3" == "true" ] && [ $1 -ne 0 ] \
+        && exit
+}
+
+execute() {
+    $1 &> /dev/null
+    print_result $? "${2:-$1}"
+}
+
+ask_for_confirmation() {
+    print_question "$1 (y/n) "
+    read -n 1
+    printf "\n"
+}
+
+cmd_exists() {
+    [ -x "$(command -v "$1")" ] \
+        && printf 0 \
+        || printf 1
+}
+
+exit_if_invalid_profile_filename() {
+    profile_dir=$1
+    if ls "$profile_dir" | grep -E '[[:space:]:,/\]'; then
+        log error "Files in '$profile_dir' contain invalid characters."
+        exit 1
+    fi
+}
+
+exit_if_invalid_directory_name() {
+    dir=$1
+    if ! echo "$dir" | grep "^[/.a-zA-Z0-9_-]*$" > /dev/null; then
+        log error "Current working directory '$dir' has an invalid character. The directory you are in when you install a profile must have alpha numeric characters, with only dashes, dots or underscores."
+        exit 1
+    fi
+}
+
+exit_if_invalid_profile_name() {
+    profile=$1
+    if ! echo "$profile" | grep "^[a-zA-Z0-9_-]*$" > /dev/null; then
+        log error "Invalid profile name '$profile'. Profiles must be alpha numeric with only dashes or underscores."
+        exit 1
+    fi
+}
+
+### end of dotbot utils
+##############################################################################################################
+
+##############################################################################################################
+### dotbot commands!
+
+# list(){}
+# info(){}
+# help(){}
+# config(){}
+# backup(){}
+# update(){}
+# upgrade(){}
+# install(){}
+# profile(){}
+# restore(){}
+
+uninstall(){
+    dir=$1
+    profile=$2
+
+    if [ ! -f "$DOTBOT_CONFIG" ]; then
+        log error "Config file '$DOTBOT_CONFIG' not found."
+        log error "No dotfiles installed by dotbot."
+        exit 1
+    fi
+
+    # Don't proceed with uninstall if profiles not available in given directory
+    if ! list_profiles |grep "^$dir $profile$" > /dev/null; then
+        log error "Profile '$profile' not installed from '$dir'."
+        exit 1
+    fi
+
+    # Loop through each file and only remove if they are a symlink
+    # and point to a file in this profile in the target dir
+    for link in $(list_links);do
+        log debug "Evaluating '$link' for removal."
+        target=$(readlink ~/"$link")
+
+        # Check if link target is part of this dotbot profile
+        expected_target_file_name=$(basename "$link" | cut -c 2-)
+        if echo "$target" |grep -E "^$dir/$profile/${expected_target_file_name}(\.rendered)?$" > /dev/null; then
+            # If a link target was rendered from a template, remove
+            # the rendered file on uninstall
+            if echo "$target" |grep -E '\.rendered$' > /dev/null; then
+                log info "Removing rendered file '$target'."
+                \rm "$target"
+            fi
+
+            log info "Removing '$link'."
+            \rm ~/"$link"
+        fi
+    done
+    log debug "All links for profile '$profile' removed."
+
+    # If no more profiles point to this directory, remove it
+    log debug "Updating dotbot config file '$DOTBOT_CONFIG'."
+    dir_empty=true
+    for link in $(list_links); do
+        log debug "Evaluating if '$link' is part of a dotbot profile in dir '$dir'."
+        expected_target_file_name=$(basename "$link" | cut -c 2-)
+        if readlink ~/"$link" |grep -E "^$dir/[a-zA-Z0-9_-]*/${expected_target_file_name}(\.rendered)?$" > /dev/null; then
+            log debug "'$link' is part of a dotbot profile in '$dir', not removing '$dir' from '$DOTBOT_CONFIG'."
+            dir_empty=false
+            break
+        fi
+    done
+
+    if [ "$dir_empty" = true ]; then
+        log info "Removing '$dir' from '$DOTBOT_CONFIG'."
+        mv "$DOTBOT_CONFIG" "${DOTBOT_CONFIG}".backup
+        grep -v "^$dir$" < "${DOTBOT_CONFIG}".backup > "$DOTBOT_CONFIG"
+    fi
+
+    # If there are no more dotbot profiles, remove .dotbot and backup
+    if [ ! -s "$DOTBOT_CONFIG" ]; then
+        log info "No more dotbot profiles installed, removing '$DOTBOT_CONFIG'."
+        \rm -f "$DOTBOT_CONFIG" "${DOTBOT_CONFIG}".backup
+    fi
+
+}
+
+### dotbot commands
+##############################################################################################################
+
+##############################################################################################################
+#####                                  DOTBOT MAIN!                                                      #####
+##############################################################################################################
+
+# Known flags
+for opt in $@
+do
+    case $opt in
+        -i|--interactive) $INTERACTIVE="true" ;;
+        -V|--verbose) $VERBOSE="true" ;;
+        -v|--version) version ;;
+        -c|--config) help ;;
+        -h|--help) help ;;
+    esac
+done
+
+# Main commands
+case "$ACTION" in
+    list) list $@ ;;
+    info) info $@ ;;
+    help) docs $@ ;;
+    config) config $@ ;;
+    backup) backup $@ ;;
+    update) install $@ ;;
+    upgrade) upgrade $@ ;;
+    install) install $@ ;;
+    profile) profile $@ ;;
+    version) version $@ ;;
+    restore) restore $@ ;;
+    uninstall) uninstall $@ ;;
+esac
+
+##############################################################################################################
