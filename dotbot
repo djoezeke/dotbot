@@ -177,7 +177,7 @@ log() {
 }
 
 # Printing
-print() {
+cout() {
     local type="$1"; shift
     local msg="$@"
     local color=""
@@ -216,31 +216,6 @@ update_config() {
     log success "Config updated: $key=$value"
 }
 
-
-# List profiles
-list_profiles() {
-    read_config || return 1
-    local repo="$REPO_URL"
-    if [[ -z "$repo" ]]; then
-        log error "REPO_URL not set in config."
-        return 1
-    fi
-    git ls-remote --heads "$repo" | awk '{print $2}' | sed 's|refs/heads/||'
-}
-
-# Install profile
-install_profile() {
-    read_config || return 1
-    local profile="$1"
-    local repo="$REPO_URL"
-    local path="${INSTALL_PATH:-$HOME}"
-    if [[ -z "$repo" || -z "$profile" ]]; then
-        log error "REPO_URL or profile not specified."
-        return 1
-    fi
-    git clone --branch "$profile" "$repo" "$path/$profile" && log success "Profile '$profile' installed to $path/$profile" || log error "Failed to install profile."
-}
-
 # Uninstall profile
 uninstall_profile() {
     read_config || return 1
@@ -253,89 +228,11 @@ uninstall_profile() {
     rm -rf "$path/$profile" && log success "Profile '$profile' uninstalled from $path/$profile" || log error "Failed to uninstall profile."
 }
 
-# Update dotfiles
-update_dotfiles() {
-    read_config || return 1
-    local profile="${DEFAULT_PROFILE}"
-    local path="${INSTALL_PATH:-$HOME}"
-    if [[ -z "$profile" ]]; then
-        log error "DEFAULT_PROFILE not set in config."
-        return 1
-    fi
-    cd "$path/$profile" && git pull && log success "Profile '$profile' updated." || log error "Failed to update profile."
-}
-
-# Show current config
-show_info() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        log error "Config file not found: $CONFIG_FILE"
-        return 1
-    fi
-    echo -e "${bold}Current botdot configuration:${reset}"
-    cat "$CONFIG_FILE"
-}
-
-# Interactive config initialization
-init_config() {
-    echo -e "${bold}Initializing botdot configuration...${reset}"
-    read -p "GitHub repository URL: " repo
-    read -p "Username/Email: " user
-    read -p "Default profile: " profile
-    read -p "Installation path [default: $HOME]: " path
-    path="${path:-$HOME}"
-    echo "REPO_URL=$repo" > "$CONFIG_FILE"
-    echo "USER=$user" >> "$CONFIG_FILE"
-    echo "DEFAULT_PROFILE=$profile" >> "$CONFIG_FILE"
-    echo "INSTALL_PATH=$path" >> "$CONFIG_FILE"
-    log success "Configuration initialized at $CONFIG_FILE"
-}
-
-# Backup current dotfiles
-backup_dotfiles() {
-    read_config || return 1
-    local profile="${DEFAULT_PROFILE}"
-    local path="${INSTALL_PATH:-$HOME}"
-    local backup_dir="$HOME/.botdot_backup"
-    mkdir -p "$backup_dir"
-    cp -r "$path/$profile" "$backup_dir/" && log success "Backup created at $backup_dir/$profile" || log error "Backup failed."
-}
-
-# Restore dotfiles from backup
-restore_dotfiles() {
-    read_config || return 1
-    local profile="${DEFAULT_PROFILE}"
-    local path="${INSTALL_PATH:-$HOME}"
-    local backup_dir="$HOME/.botdot_backup"
-    if [[ ! -d "$backup_dir/$profile" ]]; then
-        log error "No backup found for profile '$profile'."
-        return 1
-    fi
-    cp -r "$backup_dir/$profile" "$path/" && log success "Profile '$profile' restored from backup." || log error "Restore failed."
-}
-
-# Profile management
-profile_cmd() {
-    local subcmd="$1"
-    case "$subcmd" in
-        show)
-            read_config || return 1
-            echo "Current profile: ${DEFAULT_PROFILE}"
-            ;;
-        switch)
-            local new_profile="$2"
-            update_config DEFAULT_PROFILE "$new_profile"
-            log success "Switched to profile: $new_profile"
-            ;;
-        *)
-            echo "Usage: botdot profile [show|switch <profile>]"
-            ;;
-    esac
-}
 
 print_result() {
     [ $1 -eq 0 ] \
-        && print_success "$2" \
-        || print_error "$2"
+        && cout green "$2" \
+        || cout red "$2"
 
     [ "$3" == "true" ] && [ $1 -ne 0 ] \
         && exit
@@ -347,7 +244,7 @@ execute() {
 }
 
 ask_for_confirmation() {
-    print_question "$1 (y/n) "
+    cout "$1 (y/n) "
     read -n 1
     printf "\n"
 }
@@ -388,16 +285,117 @@ exit_if_invalid_profile_name() {
 ##############################################################################################################
 ### dotbot commands!
 
-# list(){}
-# info(){}
-# help(){}
-# config(){}
-# backup(){}
-# update(){}
-# upgrade(){}
-# install(){}
-# profile(){}
-# restore(){}
+# List profiles
+list() {
+    read_config || return 1
+    local repo="$REPO_URL"
+    if [[ -z "$repo" ]]; then
+        log error "REPO_URL not set in config."
+        return 1
+    fi
+    git ls-remote --heads "$repo" | awk '{cout $2}' | sed 's|refs/heads/||'
+}
+
+# Show current config
+info() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log error "Config file not found: $CONFIG_FILE"
+        return 1
+    fi
+    echo -e "${bold}Current botdot configuration:${reset}"
+    cat "$CONFIG_FILE"
+}
+
+help() {
+    if [[ -n "$2" ]]; then
+        docs "$2"
+    else
+        help
+    fi
+}
+
+config() {
+    if [[ -n "$2" ]]; then
+        update_config "$2" "$3"
+    else
+        info
+    fi
+}
+
+# Backup current dotfiles
+backup() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    mkdir -p "$backup_dir"
+    cp -r "$path/$profile" "$backup_dir/" && log success "Backup created at $backup_dir/$profile" || log error "Backup failed."
+}
+
+# Update dotfiles
+update() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$profile" ]]; then
+        log error "DEFAULT_PROFILE not set in config."
+        return 1
+    fi
+    cd "$path/$profile" && git pull && log success "Profile '$profile' updated." || log error "Failed to update profile."
+}
+
+upgrade() {
+    log info "Upgrade not yet implemented."
+}
+
+# Install profile
+install() {
+    if [[ -n "$2" ]]; then
+        read_config || return 1
+        local profile="$1"
+        local repo="$REPO_URL"
+        local path="${INSTALL_PATH:-$HOME}"
+        if [[ -z "$repo" || -z "$profile" ]]; then
+            log error "REPO_URL or profile not specified."
+            return 1
+        fi
+        git clone --branch "$profile" "$repo" "$path/$profile" && log success "Profile '$profile' installed to $path/$profile" || log error "Failed to install profile."
+    else
+        log error "No profile specified for install."
+    fi
+}
+
+# Profile management
+profile() {
+    local subcmd="$1"
+    case "$subcmd" in
+        show)
+            read_config || return 1
+            echo "Current profile: ${DEFAULT_PROFILE}"
+            ;;
+        switch)
+            local new_profile="$2"
+            update_config DEFAULT_PROFILE "$new_profile"
+            log success "Switched to profile: $new_profile"
+            ;;
+        *)
+            echo "Usage: botdot profile [show|switch <profile>]"
+            ;;
+    esac
+}
+
+# Restore dotfiles from backup
+restore() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    if [[ ! -d "$backup_dir/$profile" ]]; then
+        log error "No backup found for profile '$profile'."
+        return 1
+    fi
+    cp -r "$backup_dir/$profile" "$path/" && log success "Profile '$profile' restored from backup." || log error "Restore failed."
+}
 
 uninstall(){
     dir=$1
