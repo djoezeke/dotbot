@@ -1,5 +1,23 @@
 #!/bin/bash
 
+# ██████████    ██████████    ██████████  ██████████    ██████████    ██████████ 
+# ██████████    ██████████    ██████████  ██████████    ██████████    ██████████
+# ████   ████   ████  ████       ████     ████   ████   ████  ████       ████   
+# ████   ████   ████  ████       ████     ████   ████   ████  ████       ████   
+# ████   ████   ████  ████       ████     ██████████    ████  ████       ████   
+# ████   ████   ████  ████       ████     ████   ████   ████  ████       ████   
+# ████   ████   ████  ████       ████     ████   ████   ████  ████       ████   
+# ██████████    ██████████       ████     ██████████    ██████████       ████   
+# ██████████    ██████████       ████     ██████████    ██████████       ████   
+#
+# ◎ A Minimal Bash-based Dotfile Manager.
+
+# A Minimal Bash-based Dotfile Manager.
+#
+# Usage :
+#		dotbot version
+#		dotbot help
+
 ## DOTBOT CONSTANTS
 
 VERSION=0.0.1
@@ -9,6 +27,9 @@ INTERACTIVE="false"
 LOG_FILE="$HOME/botdot.log"
 DOTBOT_CONFIG="$HOME/botdot.conf"
 LOGGER_FMT=${LOGGER_FMT:="%Y-%m-%d"}
+
+## Environment Variables
+DOTBOT_LOG_LEVEL= 1
 
 ACTION=$1
 
@@ -38,16 +59,16 @@ version(){
 
 help(){
     cat <<EOT
-dotbot - Minimal Bash-based Dotfile Manager
+A Minimal Bash-based Dotfile Manager.
 
 Usage: 
-    $(basename "$0") <command> [<options>] [args] 
+    $(basename "$0") [options] <command>
 
 Commands:
     install [profile]         Install dotfile profile from repo.
     uninstall [profile]       Uninstall dotfile profile.
     config [key] [value]      Update config file.
-    help [command]            Show help for command or subcommand.
+    help [command]            Display documentation for a command.
     update                    Update dotfiles.
     upgrade                   Update dotbot.
     profile [show|switch]     Show or switch dotfile profiles.
@@ -59,8 +80,9 @@ Commands:
 
 Options:
     -h, --help                Print this help text.
-    -v, --version             Print script version.
-    -V, --verbose             Verbose logging.
+    -q, --quite               Use quite output.
+    -v, --version             Dispaly the dotbot version.
+    -V, --verbose             Use verbose output.
     -i, --interactive         Enable interactive setup.
 
 Run '$(basename "$0") help <command>' for details on a specific command.
@@ -216,6 +238,30 @@ update_config() {
     log success "Config updated: $key=$value"
 }
 
+# List profiles
+list_profiles() {
+    read_config || return 1
+    local repo="$REPO_URL"
+    if [[ -z "$repo" ]]; then
+        log error "REPO_URL not set in config."
+        return 1
+    fi
+    git ls-remote --heads "$repo" | awk '{print $2}' | sed 's|refs/heads/||'
+}
+
+# Install profile
+install_profile() {
+    read_config || return 1
+    local profile="$1"
+    local repo="$REPO_URL"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$repo" || -z "$profile" ]]; then
+        log error "REPO_URL or profile not specified."
+        return 1
+    fi
+    git clone --branch "$profile" "$repo" "$path/$profile" && log success "Profile '$profile' installed to $path/$profile" || log error "Failed to install profile."
+}
+
 # Uninstall profile
 uninstall_profile() {
     read_config || return 1
@@ -228,6 +274,84 @@ uninstall_profile() {
     rm -rf "$path/$profile" && log success "Profile '$profile' uninstalled from $path/$profile" || log error "Failed to uninstall profile."
 }
 
+# Update dotfiles
+update_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    if [[ -z "$profile" ]]; then
+        log error "DEFAULT_PROFILE not set in config."
+        return 1
+    fi
+    cd "$path/$profile" && git pull && log success "Profile '$profile' updated." || log error "Failed to update profile."
+}
+
+# Show current config
+show_info() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log error "Config file not found: $CONFIG_FILE"
+        return 1
+    fi
+    echo -e "${bold}Current botdot configuration:${reset}"
+    cat "$CONFIG_FILE"
+}
+
+# Interactive config initialization
+init_config() {
+    echo -e "${bold}Initializing botdot configuration...${reset}"
+    read -p "GitHub repository URL: " repo
+    read -p "Username/Email: " user
+    read -p "Default profile: " profile
+    read -p "Installation path [default: $HOME]: " path
+    path="${path:-$HOME}"
+    echo "REPO_URL=$repo" > "$CONFIG_FILE"
+    echo "USER=$user" >> "$CONFIG_FILE"
+    echo "DEFAULT_PROFILE=$profile" >> "$CONFIG_FILE"
+    echo "INSTALL_PATH=$path" >> "$CONFIG_FILE"
+    log success "Configuration initialized at $CONFIG_FILE"
+}
+
+# Backup current dotfiles
+backup_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    mkdir -p "$backup_dir"
+    cp -r "$path/$profile" "$backup_dir/" && log success "Backup created at $backup_dir/$profile" || log error "Backup failed."
+}
+
+# Restore dotfiles from backup
+restore_dotfiles() {
+    read_config || return 1
+    local profile="${DEFAULT_PROFILE}"
+    local path="${INSTALL_PATH:-$HOME}"
+    local backup_dir="$HOME/.botdot_backup"
+    if [[ ! -d "$backup_dir/$profile" ]]; then
+        log error "No backup found for profile '$profile'."
+        return 1
+    fi
+    cp -r "$backup_dir/$profile" "$path/" && log success "Profile '$profile' restored from backup." || log error "Restore failed."
+}
+
+# Profile management
+profile_cmd() {
+    local subcmd="$1"
+    case "$subcmd" in
+        show)
+            read_config || return 1
+            echo "Current profile: ${DEFAULT_PROFILE}"
+            ;;
+        switch)
+            local new_profile="$2"
+            update_config DEFAULT_PROFILE "$new_profile"
+            log success "Switched to profile: $new_profile"
+            ;;
+        *)
+            echo "Usage: botdot profile [show|switch <profile>]"
+            ;;
+    esac
+}
 
 print_result() {
     [ $1 -eq 0 ] \
@@ -498,3 +622,20 @@ case "$ACTION" in
 esac
 
 ##############################################################################################################
+
+
+# ZZZZZZZZZZZZZZZZZZZ  EEEEEEEEEEEEEEEEEEEEEE  KKKKKKKKK    KKKKKKK  EEEEEEEEEEEEEEEEEEEEEE
+# Z:::::::::::::::::Z  E::::::::::::::::::::E  K:::::::K    K:::::K  E::::::::::::::::::::E
+# Z:::::::::::::::::Z  E::::::::::::::::::::E  K:::::::K    K:::::K  E::::::::::::::::::::E
+# Z:::ZZZZZZZZ:::::Z   EE::::::EEEEEEEEE::::E  K:::::::K   K::::::K  EE::::::EEEEEEEEE::::E
+# ZZZZZ     Z:::::Z      E:::::E       EEEEEE  KK::::::K  K:::::KKK    E:::::E       EEEEEE
+#         Z:::::Z        E:::::E                K:::::K K:::::K        E:::::E
+#        Z:::::Z         E::::::EEEEEEEEEE      K::::::K:::::K         E::::::EEEEEEEEEE
+#       Z:::::Z          E:::::::::::::::E      K:::::::::::K          E:::::::::::::::E
+#      Z:::::Z           E:::::::::::::::E      K:::::::::::K          E:::::::::::::::E
+#     Z:::::Z            E::::::EEEEEEEEEE      K::::::K:::::K         E::::::EEEEEEEEEE
+#    Z:::::Z             E:::::E                K:::::K K:::::K        E:::::E
+# ZZZ:::::ZZZZZZZZZZZ    E:::::E       EEEEEE  KK::::::K  K:::::KKK    E:::::E       EEEEEE
+# Z:::::::::::::::::Z  E::::::::::::::::::::E  K:::::::K   K::::::K  E::::::::::::::::::::E
+# Z:::::::::::::::::Z  E::::::::::::::::::::E  K:::::::K    K:::::K  E::::::::::::::::::::E
+# ZZZZZZZZZZZZZZZZZZZ  EEEEEEEEEEEEEEEEEEEEEE  KKKKKKKKK    KKKKKKK  EEEEEEEEEEEEEEEEEEEEEE
